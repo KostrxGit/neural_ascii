@@ -1,5 +1,7 @@
 use mnist::{Mnist, MnistBuilder};
-use ndarray::Array2;
+use ndarray::{Array2};
+use std::fs::File;
+use std::io::{BufReader, BufRead};
 
 fn file_exists(path: &str) -> bool {
     std::fs::metadata(path).is_ok()
@@ -52,6 +54,12 @@ pub fn load_mnist() -> (Array2<f32>, Array2<f32>, Array2<f32>, Array2<f32>) {
     println!("Loaded train labels shape: {:?}", trn_lbl.shape());
     println!("Loaded test images shape: {:?}", tst_img.shape());
     println!("Loaded test labels shape: {:?}", tst_lbl.shape());
+
+    // Check for NaN values
+    assert!(!trn_img.iter().any(|&x| x.is_nan()), "NaN detected in train_images");
+    assert!(!trn_lbl.iter().any(|&x| x.is_nan()), "NaN detected in train_labels");
+    assert!(!tst_img.iter().any(|&x| x.is_nan()), "NaN detected in test_images");
+    assert!(!tst_lbl.iter().any(|&x| x.is_nan()), "NaN detected in test_labels");
 
     (trn_img, trn_lbl, tst_img, tst_lbl)
 }

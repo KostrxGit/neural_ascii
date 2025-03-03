@@ -2,6 +2,7 @@ use clap::{Arg, Command};
 use ndarray::Array1;
 use crate::data_loader::load_mnist;
 use crate::model::SimpleNN;
+use crate::model::load_model;
 
 pub fn run() {
     let matches = Command::new("Neural ASCII")
@@ -22,9 +23,14 @@ pub fn run() {
         .parse()
         .expect("Nieprawidłowy format liczby");
 
-    let (train_images, train_labels, test_images, _test_labels) = load_mnist();
-    let mut model = SimpleNN::new(28 * 28, 128, 10);
-    model.train(&train_images, &train_labels, 10, 0.01);
+    // Wczytaj model zamiast trenować od nowa
+    let (weights1, weights2, biases1, biases2) = load_model("model_weights.txt").expect("Nie udało się wczytać modelu");
+    let model = SimpleNN {
+        weights1,
+        weights2,
+        biases1,
+        biases2,
+    };
 
     // Użyj liczby jako danych wejściowych do generowania obrazu
     let input = Array1::zeros(28 * 28); // Możesz tutaj wprowadzić obraz odpowiadający liczbie
