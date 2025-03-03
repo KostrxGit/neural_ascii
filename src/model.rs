@@ -55,61 +55,79 @@ impl SimpleNN {
                 total_error += output_error.iter().map(|&x| x * x).sum::<f32>();
                 
                 let hidden = input.dot(&self.weights1) + &self.biases1;
+                let hidden = hidden.map(|x| if *x > 0.0 { *x } else { 0.01 * *x }); // ReLU activation
+                // 🔹 Skopiuj `hidden`, żeby można było go później użyć
+                let hidden_cloned = hidden.clone();
 
-                //println!("Hidden before activation: {:?}", hidden);
-
-                let hidden = hidden.map(|x| x.max(0.0)); // ReLU activation
-
-                //println!("Hidden after activation: {:?}", hidden);
 
                 let hidden_error = output_delta.dot(&self.weights2.t());
                 let hidden_delta = hidden_error * hidden.map(|x| if *x > 0.0 { 1.0 } else { 0.01 });
 
-                //println!("Hidden delta: {:?}", hidden_delta);
-                // println!("Gradient weights1: {:?}", hidden_delta.view().insert_axis(Axis(0)));
-
-                let hidden_expanded = hidden.insert_axis(Axis(1));  // Rozszerzenie wymiaru do (128, 1)
+                let hidden_expanded = hidden_cloned.insert_axis(Axis(1));  // Rozszerzenie wymiaru do (128, 1)
                 let output_delta_expanded = output_delta.clone().insert_axis(Axis(0));  // Rozszerzenie wymiaru do (1, 10)
 
-                 
+
+                // 🔹 **Obliczanie średniej i odchylenia standardowego dla Batch Normalization**
+            let mean_hidden = hidden.mean_axis(Axis(0)).unwrap(); // Średnia dla każdej kolumny (neuronu)
+            let std_hidden = hidden.std_axis(Axis(0), 0.0); // Odchylenie standardowe
+
+            // 🔹 **Opcjonalnie Batch Normalization**
+            let hidden = (hidden - &mean_hidden) / (&std_hidden + 1e-8);
+
+                  // 🔹 **Oblicz normę gradientów przed aktualizacją wag**
+            let grad_w1 = input.view().insert_axis(Axis(1)).dot(&hidden_delta.view().insert_axis(Axis(0))).into_owned();
+            let grad_w2 = hidden_expanded.dot(&output_delta_expanded).into_owned();
+            let norm_w1 = grad_w1.map(|x| x.powi(2)).sum().sqrt();
+            let norm_w2 = grad_w2.map(|x| x.powi(2)).sum().sqrt();
+
+            println!(
+                "Epoch: {}, Step: {}, Grad W1 Norm: {:.6e}, Grad W2 Norm: {:.6e}",
+                epoch, step, norm_w1, norm_w2
+            );
               
 
                 //Adaptiv scaling
                 //let norm = self.weights2.iter().map(|x| x.powi(2)).sum::<f32>().sqrt();
                 // let scale = (grad_clipping_threshold / norm).min(1.0);
                 // self.weights2 *= scale;
-                // Ograniczanie gradientów (gradient clipping)
-                let grad_clipping_threshold = 5.0;
-                let lambda = 0.01; // Współczynnik regularizacji
-                self.weights2 = self.weights2.clone() + hidden_expanded.dot(&output_delta_expanded).into_owned().map(|x| x.min(grad_clipping_threshold).max(-grad_clipping_threshold)) * learning_rate - lambda * &self.weights2;
-                self.weights1 = self.weights1.clone() + input.view().insert_axis(Axis(1)).dot(&hidden_delta.view().insert_axis(Axis(0))).into_owned().map(|x| x.min(grad_clipping_threshold).max(-grad_clipping_threshold)) * learning_rate - lambda * &self.weights1;
-                self.biases2 = self.biases2.clone() + output_delta.sum_axis(Axis(0)).into_owned().map(|x| x.min(grad_clipping_threshold).max(-grad_clipping_threshold)) * learning_rate;
-                self.biases1 = self.biases1.clone() + hidden_delta.sum_axis(Axis(0)).into_owned().map(|x| x.min(grad_clipping_threshold).max(-grad_clipping_threshold)) * learning_rate;
 
-                println!("After weights1: {:?}", self.weights1);
-                println!("After  weights2: {:?}", self.weights2);
-                // println!("After  biases1: {:?}", self.biases1);
-                // println!("After  biases2: {:?}", self.biases2);
                 
-          
+
+                
+
+            
+                // 🔹 **Gradient Clipping**
+                let grad_clipping_threshold = 5.0;
+                let lambda = 0.0001; // Zmniejszona regularizacja
+                
+                
+                self.weights2 = self.weights2.clone()
+                + grad_w2.map(|x| x.min(grad_clipping_threshold).max(-grad_clipping_threshold)) * learning_rate
+                - lambda * &self.weights2;
+            
+            self.weights1 = self.weights1.clone()
+                + grad_w1.map(|x| x.min(grad_clipping_threshold).max(-grad_clipping_threshold)) * learning_rate
+                - lambda * &self.weights1;
+
+            self.biases2 = self.biases2.clone()
+                + output_delta.sum_axis(Axis(0)).into_owned()
+                .map(|x| x.min(grad_clipping_threshold).max(-grad_clipping_threshold)) * learning_rate;
+
+            self.biases1 = self.biases1.clone()
+                + hidden_delta.sum_axis(Axis(0)).into_owned()
+                .map(|x| x.min(grad_clipping_threshold).max(-grad_clipping_threshold)) * learning_rate;
+
                 
 
                 // Wyświetlanie postępu kroków
                 if step % 100 == 0 {
-                    println!("Epoch: {}, Step: {}, hidden_expanded shape: {:?}, output_delta_expanded shape: {:?}", epoch, step, hidden_expanded.shape(), output_delta_expanded.shape());
-                }
-                if self.weights1.iter().any(|x| x.is_nan()) {
-                    panic!("NaN detected in weights1!");
-                }
-                if self.weights2.iter().any(|x| x.is_nan()) {
-                    panic!("NaN detected in weights2!");
-                }
-                if self.biases1.iter().any(|x| x.is_nan()) {
-                    panic!("NaN detected in biases1!");
-                }
-                if self.biases2.iter().any(|x| x.is_nan()) {
-                    panic!("NaN detected in biases2!");
-                }                
+                    println!(
+                        "Epoch: {}, Step: {}, Mean W1: {:.6e}, Mean W2: {:.6e}",
+                        epoch, step,
+                        self.weights1.mean().unwrap(),
+                        self.weights2.mean().unwrap()
+                    );
+                }        
             }
             println!("Epoch: {}, Error: {}", epoch, total_error);
         }
