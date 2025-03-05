@@ -1,6 +1,6 @@
 use serde::{Serialize, Deserialize};
 use std::fs::File;
-use std::io::{BufWriter, Write};
+use std::io::{BufWriter};
 use serde_json;
 use ndarray::{Array1,Array2};
 

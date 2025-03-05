@@ -1,26 +1,42 @@
+use serde::{Deserialize};
+use serde_json;
 use std::fs::File;
 use std::io::BufReader;
-use ndarray::{Array1,Array2};
-use serde::{Serialize, Deserialize};
+use ndarray::{Array2, Array1};
 use crate::model::SimpleNN;
 
-pub fn load_model(filename: &str) -> std::io::Result<(Array2<f32>, Array2<f32>, Array1<f32>, Array1<f32>)> {
+#[derive(Deserialize)]
+struct Model {
+    weights1: Vec<Vec<f32>>,
+    weights2: Vec<Vec<f32>>,
+    biases1: Vec<f32>,
+    biases2: Vec<f32>,
+}
+
+pub fn load_model(filename: &str) -> Result<SimpleNN, Box<dyn std::error::Error>> {
     let file = File::open(filename)?;
     let reader = BufReader::new(file);
-    let model_data: SimpleNN = serde_json::from_reader(reader)?;
+    let model: Model = serde_json::from_reader(reader)?;
 
+    // Convert Vec<Vec<f32>> to Array2<f32>
     let weights1 = Array2::from_shape_vec(
-        (model_data.weights1.len(), model_data.weights1[0].len()), 
-        model_data.weights1.into_iter().flatten().collect()
-    ).unwrap();
+        (model.weights1.len(), model.weights1[0].len()), 
+        model.weights1.into_iter().flatten().collect(),
+    )?;
     
     let weights2 = Array2::from_shape_vec(
-        (model_data.weights2.len(), model_data.weights2[0].len()), 
-        model_data.weights2.into_iter().flatten().collect()
-    ).unwrap();
-    
-    let biases1 = Array1::from_vec(model_data.biases1);
-    let biases2 = Array1::from_vec(model_data.biases2);
+        (model.weights2.len(), model.weights2[0].len()), 
+        model.weights2.into_iter().flatten().collect(),
+    )?;
 
-    Ok((weights1, weights2, biases1, biases2))
+    // Convert Vec<f32> to Array1<f32>
+    let biases1 = Array1::from_vec(model.biases1);
+    let biases2 = Array1::from_vec(model.biases2);
+
+    Ok(SimpleNN {
+        weights1,
+        weights2,
+        biases1,
+        biases2,
+    })
 }

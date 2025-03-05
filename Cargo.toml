@@ -6,7 +6,7 @@ edition = "2024"
 
 
 [dependencies]
-ndarray = "0.15"
+ndarray = { version = "0.15", features = ["serde"] }
 mnist = "0.6.0"
 clap = { version = "4.0", features = ["derive"] }
 ndarray-rand = "0.14"

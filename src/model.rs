@@ -1,10 +1,13 @@
 use ndarray::{Array2, Array1, Axis};
 use ndarray_rand::RandomExt;
+use ndarray_rand::rand_distr::Uniform;
 use rand_distr::{Distribution, Normal};
 use std::fs::File;
 use std::io::{BufReader, BufRead};
 use serde_json;
+use serde::{Serialize, Deserialize};
 
+#[derive(Serialize, Deserialize)]
 pub struct SimpleNN {
     pub weights1: Array2<f32>,
     pub weights2: Array2<f32>,
@@ -38,119 +41,54 @@ impl SimpleNN {
         output
     }
 
-    pub fn train(&mut self, inputs: &Array2<f32>, labels: &Array2<f32>, epochs: usize, learning_rate: f32) {
-        let lambda = 0.01; 
-        let max_grad_norm = 0.01;
-        let grad_clipping_threshold = 0.1;
-
+    pub fn train(&mut self, inputs: &Array2<f32>, targets: &Vec<Array1<f32>>, epochs: usize, learning_rate: f32) {
         for epoch in 0..epochs {
-            let mut total_error = 0.0;
-            for (step, (input, label)) in inputs.outer_iter().zip(labels.outer_iter()).enumerate() {
-                let output = self.forward(&input.to_owned());
-                let output_error = &label - &output;
-                let output_delta = &output_error * &(output.clone() * (1.0 - &output) + 1e-8);
+            println!("Starting Epoch {}/{}", epoch + 1, epochs); 
+            let mut total_loss = 0.0;
+            
+            for (i, target) in targets.iter().enumerate() {
+                let input = inputs.row(i); // Pobierz cały wiersz jako `Array1<f32>`
+    
+                // Normalizacja wejścia
+                let std = input.std(1.0).max(1e-8); // Standardowe odchylenie
+                let mean = input.mean().unwrap(); // Średnia
+    
+                let input_norm = (&input - mean) / std;
+    
+                // Forward pass
+                let mut hidden = input_norm.dot(&self.weights1) + &self.biases1;
+                hidden.mapv_inplace(|x| x.clamp(-10.0, 10.0));
+                hidden.mapv_inplace(|x| if x > 0.0 { x } else { 0.01 * x }); // Leaky ReLU
                 
-                total_error += output_error.iter().map(|&x| x * x).sum::<f32>();
-
-                let hidden = input.dot(&self.weights1) + &self.biases1;
-                let hidden = hidden.mapv(|x| if x > 0.0 { x } else { 0.01 * x });
-
-                let mean_hidden = hidden.mean_axis(Axis(0)).unwrap();
-                let std_hidden = hidden.std_axis(Axis(0), 0.0).mapv(|x| (x + 1e-3).max(1e-3));
-
-                let hidden = (hidden - &mean_hidden) / (&std_hidden + 1e-8);
-                let hidden_cloned = hidden.clone();
-
-                let hidden_error = output_delta.dot(&self.weights2.t());
-                let hidden_delta = hidden_error.mapv(|x| x.clamp(-10.0, 10.0)) * hidden.mapv(|x| if x > 0.0 { 1.0 } else { 0.01 });
-
-                let hidden_expanded = hidden_cloned.insert_axis(Axis(1));
-                let output_delta_expanded = output_delta.clone().insert_axis(Axis(0));
-
-                let mut grad_w1 = input.view().insert_axis(Axis(1)).dot(&hidden_delta.view().insert_axis(Axis(0))).into_owned();
-                let mut grad_w2 = hidden_expanded.dot(&output_delta_expanded).into_owned();
-
-                grad_w1 = grad_w1.mapv(|x| x.clamp(-grad_clipping_threshold, grad_clipping_threshold));
-                grad_w2 = grad_w2.mapv(|x| x.clamp(-grad_clipping_threshold, grad_clipping_threshold));
-
-                let norm_w1 = grad_w1.map(|x| x.powi(2)).sum().sqrt();
-                let norm_w2 = grad_w2.map(|x| x.powi(2)).sum().sqrt();
-
-                if norm_w1 > max_grad_norm {
-                    let scale = max_grad_norm / norm_w1;
-                    grad_w1 *= scale;
-                }
-
-                if norm_w2 > max_grad_norm {
-                    let scale = max_grad_norm / norm_w2;
-                    grad_w2 *= scale;
-                }
-
-                println!(
-                    "Epoch: {}, Step: {}, Grad W1 Norm: {:.6e}, Grad W2 Norm: {:.6e} , Mean Error per Sample: {:.6}",
-                    epoch, step, norm_w1, norm_w2, total_error / inputs.shape()[0] as f32
-                );
-
+                let output = hidden.dot(&self.weights2) + &self.biases2;
+    
+                // Compute loss (Mean Squared Error)
+                let loss = (&output - target).mapv(|x| x.powi(2)).sum();
+                total_loss += loss;
+    
+                // Backward pass
+                let output_error = &output - target;
+                let output_error_clone = output_error.clone();
+                let hidden_error = output_error.dot(&self.weights2.t());
                 
-
+    
+                let hidden_grad = hidden.mapv(|x| if x > 0.0 { 1.0 } else { 0.01 }); // Derivative of Leaky ReLU
+                let hidden_delta = &hidden_error * &hidden_grad;
+                let hidden_delta_clone = hidden_delta.clone();
+                // Update weights and biases
+                self.weights2 -= &(hidden.insert_axis(Axis(1)).dot(&output_error_clone.insert_axis(Axis(0))) * learning_rate);
+                self.biases2 -= &(output_error * learning_rate);
                 
+                self.weights1 -= &(input_norm.insert_axis(Axis(1)).dot(&hidden_delta_clone.insert_axis(Axis(0))) * learning_rate);
+                self.biases1 -= &(hidden_delta * learning_rate);
 
-                // Check for NaNs before updating
-                if !grad_w1.iter().any(|&x| x.is_nan() || x.is_infinite()) &&
-                   !grad_w2.iter().any(|&x| x.is_nan() || x.is_infinite()) {
-                    
-                    self.weights1 -= &grad_w1.mapv(|x| x * learning_rate);
-                    self.weights1 *= 1.0 - learning_rate * lambda; // L2 Regularization
-
-                    self.weights2 -= &grad_w2.mapv(|x| x * learning_rate);
-                    self.weights2 *= 1.0 - learning_rate * lambda; // L2 Regularization
-                }
-
-                println!("Grad Bias1 Mean: {:?}", hidden_delta.sum_axis(Axis(0)).mean());
-                println!("Grad Bias2 Mean: {:?}", output_delta.sum_axis(Axis(0)).mean());
-
-                // Update biases
-                self.biases1 = &self.biases1 + &(hidden_delta.sum_axis(Axis(0)) * learning_rate);
-                self.biases1 *= 1.0 - learning_rate * lambda;
-                
-                self.biases2 = &self.biases2 + &(output_delta.sum_axis(Axis(0)) * learning_rate);
-                self.biases2 *= 1.0 - learning_rate * lambda;
-
-                if step % 100 == 0 {
-                    println!(
-                        "Epoch: {}, Step: {}, Mean W1: {:.6e}, Mean W2: {:.6e}, Bias1 Mean: {:.6}, Bias2 Mean: {:.6} ",
-                        epoch, step,
-                        self.weights1.mean().unwrap(),
-                        self.weights2.mean().unwrap(), 
-                        self.biases1.mean().unwrap(),
-                        self.biases2.mean().unwrap()
-                    );
-                }        
+                println!("Epoch: {}, Sample {}/{}, Loss {:.4}", epoch + 1, i + 1, inputs.nrows(), loss);
             }
-            println!("Epoch: {}, Error: {}", epoch, total_error);
+
+            println!("Epoch: {}, Average Loss: {:.4}", epoch + 1, total_loss / inputs.nrows() as f32);
         }
     }
 }
 
-pub fn load_model(filename: &str) -> std::io::Result<(Array2<f32>, Array2<f32>, Array1<f32>, Array1<f32>)> {
-    let file = File::open(filename)?;
-    let reader = BufReader::new(file);
 
-    let mut lines = reader.lines();
-    let weights1_shape: Vec<usize> = serde_json::from_str(&lines.next().unwrap()?).unwrap();
-    let weights1: Vec<f32> = serde_json::from_str(&lines.next().unwrap()?).unwrap();
-    let weights2_shape: Vec<usize> = serde_json::from_str(&lines.next().unwrap()?).unwrap();
-    let weights2: Vec<f32> = serde_json::from_str(&lines.next().unwrap()?).unwrap();
-    let biases1_shape: Vec<usize> = serde_json::from_str(&lines.next().unwrap()?).unwrap();
-    let biases1: Vec<f32> = serde_json::from_str(&lines.next().unwrap()?).unwrap();
-    let biases2_shape: Vec<usize> = serde_json::from_str(&lines.next().unwrap()?).unwrap();
-    let biases2: Vec<f32> = serde_json::from_str(&lines.next().unwrap()?).unwrap();
-
-    let weights1 = Array2::from_shape_vec((weights1_shape[0], weights1_shape[1]), weights1).unwrap();
-    let weights2 = Array2::from_shape_vec((weights2_shape[0], weights2_shape[1]), weights2).unwrap();
-    let biases1 = Array1::from_shape_vec(biases1_shape[0], biases1).unwrap();
-    let biases2 = Array1::from_shape_vec(biases2_shape[0], biases2).unwrap();
-
-    Ok((weights1, weights2, biases1, biases2))
-}
 
