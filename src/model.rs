@@ -2,8 +2,7 @@ use ndarray::{Array2, Array1, Axis};
 use ndarray_rand::RandomExt;
 use rand_distr::{Distribution, Normal};
 use std::fs::File;
-use std::io::{Write, BufWriter, BufReader, BufRead};
-use rand::Rng;
+use std::io::{BufReader, BufRead};
 use serde_json;
 
 pub struct SimpleNN {
@@ -14,11 +13,11 @@ pub struct SimpleNN {
 }
 
 impl SimpleNN {
-    
     pub fn new(input_size: usize, hidden_size: usize, output_size: usize) -> Self {
-        let std = (2.0 / hidden_size as f32).sqrt();
-        let weights1: Array2<f32> = Array2::random((input_size, hidden_size), Normal::new(0.0, std).unwrap());
-        let weights2: Array2<f32> = Array2::random((hidden_size, output_size), Normal::new(0.0, std).unwrap());
+        let fan_in = input_size;
+        let stddev = (2.0 / fan_in as f32).sqrt();
+        let weights1: Array2<f32> = Array2::random((fan_in, hidden_size), Normal::new(0.0, stddev).unwrap());
+        let weights2: Array2<f32> = Array2::random((hidden_size, output_size), Normal::new(0.0, stddev).unwrap());
         let biases1: Array1<f32> = Array1::zeros(hidden_size);
         let biases2: Array1<f32> = Array1::zeros(output_size);
 
@@ -26,106 +25,105 @@ impl SimpleNN {
     }
 
     pub fn forward(&self, input: &Array1<f32>) -> Array1<f32> {
+        let std = input.std(0.0).max(1e-8);
+        let mean = input.mean().unwrap_or(0.0);
 
-        let hidden = input.dot(&self.weights1) + &self.biases1;
+        let input = (input - mean) / std;
+        let mut hidden = input.dot(&self.weights1) + &self.biases1;
 
-        // println!("Hidden before activation: {:?}", hidden);
-
-        let hidden = hidden.map(|x| if *x > 0.0 {*x} else {0.01 * *x}); // Leaky ReLU activation
-
-        // println!("Hidden after activation: {:?}", hidden);
+        hidden.mapv_inplace(|x| x.clamp(-10.0, 10.0));
+        hidden.mapv_inplace(|x| if x > 0.0 { x } else { 0.01 * x }); // Leaky ReLU
 
         let output = hidden.dot(&self.weights2) + &self.biases2;
-
         output
     }
 
-    
-
     pub fn train(&mut self, inputs: &Array2<f32>, labels: &Array2<f32>, epochs: usize, learning_rate: f32) {
+        let lambda = 0.01; 
+        let max_grad_norm = 0.01;
+        let grad_clipping_threshold = 0.1;
+
         for epoch in 0..epochs {
             let mut total_error = 0.0;
             for (step, (input, label)) in inputs.outer_iter().zip(labels.outer_iter()).enumerate() {
                 let output = self.forward(&input.to_owned());
-
                 let output_error = &label - &output;
-                let output_delta = output_error.clone();
-                //output_delta = output_error * (output * (1.0 - output))
-
-                total_error += output_error.iter().map(|&x| x * x).sum::<f32>();
+                let output_delta = &output_error * &(output.clone() * (1.0 - &output) + 1e-8);
                 
+                total_error += output_error.iter().map(|&x| x * x).sum::<f32>();
+
                 let hidden = input.dot(&self.weights1) + &self.biases1;
-                let hidden = hidden.map(|x| if *x > 0.0 { *x } else { 0.01 * *x }); // ReLU activation
-                // 🔹 Skopiuj `hidden`, żeby można było go później użyć
+                let hidden = hidden.mapv(|x| if x > 0.0 { x } else { 0.01 * x });
+
+                let mean_hidden = hidden.mean_axis(Axis(0)).unwrap();
+                let std_hidden = hidden.std_axis(Axis(0), 0.0).mapv(|x| (x + 1e-3).max(1e-3));
+
+                let hidden = (hidden - &mean_hidden) / (&std_hidden + 1e-8);
                 let hidden_cloned = hidden.clone();
 
-
                 let hidden_error = output_delta.dot(&self.weights2.t());
-                let hidden_delta = hidden_error * hidden.map(|x| if *x > 0.0 { 1.0 } else { 0.01 });
+                let hidden_delta = hidden_error.mapv(|x| x.clamp(-10.0, 10.0)) * hidden.mapv(|x| if x > 0.0 { 1.0 } else { 0.01 });
 
-                let hidden_expanded = hidden_cloned.insert_axis(Axis(1));  // Rozszerzenie wymiaru do (128, 1)
-                let output_delta_expanded = output_delta.clone().insert_axis(Axis(0));  // Rozszerzenie wymiaru do (1, 10)
+                let hidden_expanded = hidden_cloned.insert_axis(Axis(1));
+                let output_delta_expanded = output_delta.clone().insert_axis(Axis(0));
 
+                let mut grad_w1 = input.view().insert_axis(Axis(1)).dot(&hidden_delta.view().insert_axis(Axis(0))).into_owned();
+                let mut grad_w2 = hidden_expanded.dot(&output_delta_expanded).into_owned();
 
-                // 🔹 **Obliczanie średniej i odchylenia standardowego dla Batch Normalization**
-            let mean_hidden = hidden.mean_axis(Axis(0)).unwrap(); // Średnia dla każdej kolumny (neuronu)
-            let std_hidden = hidden.std_axis(Axis(0), 0.0); // Odchylenie standardowe
+                grad_w1 = grad_w1.mapv(|x| x.clamp(-grad_clipping_threshold, grad_clipping_threshold));
+                grad_w2 = grad_w2.mapv(|x| x.clamp(-grad_clipping_threshold, grad_clipping_threshold));
 
-            // 🔹 **Opcjonalnie Batch Normalization**
-            let hidden = (hidden - &mean_hidden) / (&std_hidden + 1e-8);
+                let norm_w1 = grad_w1.map(|x| x.powi(2)).sum().sqrt();
+                let norm_w2 = grad_w2.map(|x| x.powi(2)).sum().sqrt();
 
-                  // 🔹 **Oblicz normę gradientów przed aktualizacją wag**
-            let grad_w1 = input.view().insert_axis(Axis(1)).dot(&hidden_delta.view().insert_axis(Axis(0))).into_owned();
-            let grad_w2 = hidden_expanded.dot(&output_delta_expanded).into_owned();
-            let norm_w1 = grad_w1.map(|x| x.powi(2)).sum().sqrt();
-            let norm_w2 = grad_w2.map(|x| x.powi(2)).sum().sqrt();
+                if norm_w1 > max_grad_norm {
+                    let scale = max_grad_norm / norm_w1;
+                    grad_w1 *= scale;
+                }
 
-            println!(
-                "Epoch: {}, Step: {}, Grad W1 Norm: {:.6e}, Grad W2 Norm: {:.6e}",
-                epoch, step, norm_w1, norm_w2
-            );
-              
+                if norm_w2 > max_grad_norm {
+                    let scale = max_grad_norm / norm_w2;
+                    grad_w2 *= scale;
+                }
 
-                //Adaptiv scaling
-                //let norm = self.weights2.iter().map(|x| x.powi(2)).sum::<f32>().sqrt();
-                // let scale = (grad_clipping_threshold / norm).min(1.0);
-                // self.weights2 *= scale;
-
-                
+                println!(
+                    "Epoch: {}, Step: {}, Grad W1 Norm: {:.6e}, Grad W2 Norm: {:.6e} , Mean Error per Sample: {:.6}",
+                    epoch, step, norm_w1, norm_w2, total_error / inputs.shape()[0] as f32
+                );
 
                 
 
-            
-                // 🔹 **Gradient Clipping**
-                let grad_clipping_threshold = 5.0;
-                let lambda = 0.0001; // Zmniejszona regularizacja
-                
-                
-                self.weights2 = self.weights2.clone()
-                + grad_w2.map(|x| x.min(grad_clipping_threshold).max(-grad_clipping_threshold)) * learning_rate
-                - lambda * &self.weights2;
-            
-            self.weights1 = self.weights1.clone()
-                + grad_w1.map(|x| x.min(grad_clipping_threshold).max(-grad_clipping_threshold)) * learning_rate
-                - lambda * &self.weights1;
-
-            self.biases2 = self.biases2.clone()
-                + output_delta.sum_axis(Axis(0)).into_owned()
-                .map(|x| x.min(grad_clipping_threshold).max(-grad_clipping_threshold)) * learning_rate;
-
-            self.biases1 = self.biases1.clone()
-                + hidden_delta.sum_axis(Axis(0)).into_owned()
-                .map(|x| x.min(grad_clipping_threshold).max(-grad_clipping_threshold)) * learning_rate;
-
                 
 
-                // Wyświetlanie postępu kroków
+                // Check for NaNs before updating
+                if !grad_w1.iter().any(|&x| x.is_nan() || x.is_infinite()) &&
+                   !grad_w2.iter().any(|&x| x.is_nan() || x.is_infinite()) {
+                    
+                    self.weights1 -= &grad_w1.mapv(|x| x * learning_rate);
+                    self.weights1 *= 1.0 - learning_rate * lambda; // L2 Regularization
+
+                    self.weights2 -= &grad_w2.mapv(|x| x * learning_rate);
+                    self.weights2 *= 1.0 - learning_rate * lambda; // L2 Regularization
+                }
+
+                println!("Grad Bias1 Mean: {:?}", hidden_delta.sum_axis(Axis(0)).mean());
+                println!("Grad Bias2 Mean: {:?}", output_delta.sum_axis(Axis(0)).mean());
+
+                // Update biases
+                self.biases1 = &self.biases1 + &(hidden_delta.sum_axis(Axis(0)) * learning_rate);
+                self.biases1 *= 1.0 - learning_rate * lambda;
+                
+                self.biases2 = &self.biases2 + &(output_delta.sum_axis(Axis(0)) * learning_rate);
+                self.biases2 *= 1.0 - learning_rate * lambda;
+
                 if step % 100 == 0 {
                     println!(
-                        "Epoch: {}, Step: {}, Mean W1: {:.6e}, Mean W2: {:.6e}",
+                        "Epoch: {}, Step: {}, Mean W1: {:.6e}, Mean W2: {:.6e}, Bias1 Mean: {:.6}, Bias2 Mean: {:.6} ",
                         epoch, step,
                         self.weights1.mean().unwrap(),
-                        self.weights2.mean().unwrap()
+                        self.weights2.mean().unwrap(), 
+                        self.biases1.mean().unwrap(),
+                        self.biases2.mean().unwrap()
                     );
                 }        
             }
@@ -133,24 +131,6 @@ impl SimpleNN {
         }
     }
 }
-
-
-pub fn save_model(weights1: &Array2<f32>, weights2: &Array2<f32>, biases1: &Array1<f32>, biases2: &Array1<f32>, filename: &str) -> std::io::Result<()> {
-    let file = File::create(filename)?;
-    let mut writer = BufWriter::new(file);
-
-    writeln!(writer, "{:?}", weights1.shape())?;
-    writeln!(writer, "{:?}", weights1.as_slice().unwrap())?;
-    writeln!(writer, "{:?}", weights2.shape())?;
-    writeln!(writer, "{:?}", weights2.as_slice().unwrap())?;
-    writeln!(writer, "{:?}", biases1.shape())?;
-    writeln!(writer, "{:?}", biases1.as_slice().unwrap())?;
-    writeln!(writer, "{:?}", biases2.shape())?;
-    writeln!(writer, "{:?}", biases2.as_slice().unwrap())?;
-
-    Ok(())
-}
-
 
 pub fn load_model(filename: &str) -> std::io::Result<(Array2<f32>, Array2<f32>, Array1<f32>, Array1<f32>)> {
     let file = File::open(filename)?;

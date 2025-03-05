@@ -2,6 +2,8 @@ use serde::{Serialize, Deserialize};
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use serde_json;
+use ndarray::{Array1,Array2};
+
 
 #[derive(Serialize, Deserialize)]
 struct ModelData {

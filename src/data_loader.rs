@@ -1,7 +1,5 @@
 use mnist::{Mnist, MnistBuilder};
 use ndarray::{Array2};
-use std::fs::File;
-use std::io::{BufReader, BufRead};
 
 fn file_exists(path: &str) -> bool {
     std::fs::metadata(path).is_ok()

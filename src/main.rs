@@ -2,9 +2,13 @@ mod data_loader;
 mod model;
 mod ascii_renderer;
 mod cli;
+mod save_model;
+// mod load_model;
 use ndarray::{Array2, Axis};
 use data_loader::load_mnist;
-use model::{SimpleNN, save_model};
+use model::{SimpleNN};
+use save_model::{save_model};
+
 
 fn normalize(inputs: &Array2<f32>) -> Array2<f32> {
         let mean = inputs.mean_axis(Axis(0)).unwrap();
@@ -28,8 +32,8 @@ fn main() {
 
 
     let mut model = SimpleNN::new(28 * 28, 128, 10);
-    model.train(&limited_train_images, &train_labels, 1, 0.05); //zwiększyć learning rate np. 0.05
+    model.train(&limited_train_images, &train_labels, 1, 0.0001); 
 
     // Zapisz model po treningu
-    save_model(&model.weights1, &model.weights2, &model.biases1, &model.biases2, "model_weights.txt").expect("Failed to save model");
+    save_model(&model.weights1, &model.weights2, &model.biases1, &model.biases2, "model_weights.json").expect("Failed to save model");
 }

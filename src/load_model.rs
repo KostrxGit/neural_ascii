@@ -1,10 +1,13 @@
 use std::fs::File;
 use std::io::BufReader;
+use ndarray::{Array1,Array2};
+use serde::{Serialize, Deserialize};
+use crate::model::SimpleNN;
 
 pub fn load_model(filename: &str) -> std::io::Result<(Array2<f32>, Array2<f32>, Array1<f32>, Array1<f32>)> {
     let file = File::open(filename)?;
     let reader = BufReader::new(file);
-    let model_data: ModelData = serde_json::from_reader(reader)?;
+    let model_data: SimpleNN = serde_json::from_reader(reader)?;
 
     let weights1 = Array2::from_shape_vec(
         (model_data.weights1.len(), model_data.weights1[0].len()), 
