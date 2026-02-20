@@ -48,7 +48,7 @@ fn main() {
 
 
         let mut model = SimpleNN::new(28 * 28, 128, 10);
-        model.train(&limited_train_images, &train_labels_vec, 4, 0.01); 
+        model.train(&limited_train_images, &train_labels_vec, 20, 0.01); 
 
         // Zapisz model po treningu
         save_model(&model.weights1, &model.weights2, &model.biases1, &model.biases2, "model_weights.json").expect("Failed to save model");
