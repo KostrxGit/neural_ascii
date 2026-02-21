@@ -1,4 +1,4 @@
-# Neural ASCII
+# AI Handwritten digits recognition
 
 A neural network built from scratch in Rust that recognizes handwritten digits from the MNIST dataset and renders predictions as ASCII art.
 
